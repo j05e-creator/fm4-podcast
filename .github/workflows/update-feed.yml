@@ -28,6 +28,11 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install chromium --with-deps
+
       - name: Generate FM4 podcast feed
         run: |
           python generate_feed.py
