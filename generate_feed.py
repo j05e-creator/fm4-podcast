@@ -1,6 +1,7 @@
 import json
 import urllib.request
 import uuid
+from urllib.parse import urlencode
 
 
 BROADCAST_ID = "1028051"
@@ -15,9 +16,12 @@ def main():
     print("Testing FM4 direct audio URL")
     print()
 
+    # Get broadcast information
     request = urllib.request.Request(
         API_URL,
-        headers={"User-Agent": "Mozilla/5.0 FM4-Podcast-Test/1.0"},
+        headers={
+            "User-Agent": "Mozilla/5.0 FM4-Podcast-Test/1.0"
+        },
     )
 
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -26,32 +30,41 @@ def main():
     payload = data["payload"]
     stream = payload["streams"][0]
 
-    template = stream["uriTemplates"]["progressive"]
+    # Get the actual MP3 ID from the API
+    progressive_url = stream["urls"]["progressive"]
 
-    print("Template:")
-    print(template)
+    print("FM4 progressive URL:")
+    print(progressive_url)
     print()
 
-    userid = str(uuid.uuid4())
+    # Extract the audio ID from the URL
+    audio_id = progressive_url.split("id=")[1].split("&")[0]
 
-    audio_url = template
+    print("Audio ID:")
+    print(audio_id)
+    print()
 
-    audio_url = audio_url.replace("{offset}", "offset=0")
-    audio_url = audio_url.replace("{offsetende}", f"offsetende={payload['duration']}")
-    audio_url = audio_url.replace("{shoutcast}", "shoutcast=0")
-    audio_url = audio_url.replace("{player}", "player=web")
-    audio_url = audio_url.replace("{referer}", "referer=fm4.orf.at")
-    audio_url = audio_url.replace("{userid}", f"userid={userid}")
+    # Build the URL ourselves
+    params = {
+        "channel": "fm4",
+        "id": audio_id,
+        "offset": "0",
+        "offsetende": str(payload["duration"]),
+        "shoutcast": "0",
+        "referer": "fm4.orf.at",
+        "userid": str(uuid.uuid4()),
+    }
+
+    audio_url = (
+        "https://loopstreamfm4.apa.at/?"
+        + urlencode(params)
+    )
 
     print("Constructed audio URL:")
     print(audio_url)
     print()
 
-    if "{" in audio_url or "}" in audio_url:
-        print("ERROR: URL still contains placeholders!")
-        return
-
-    print("No placeholders remain.")
+    print("Checking URL...")
     print()
 
     audio_request = urllib.request.Request(
