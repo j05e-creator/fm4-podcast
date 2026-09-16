@@ -1,7 +1,6 @@
 import json
 import urllib.request
 import uuid
-from urllib.parse import urlparse
 
 
 BROADCAST_ID = "1028051"
@@ -25,13 +24,9 @@ def main():
         data = json.loads(response.read().decode("utf-8"))
 
     payload = data["payload"]
-
     stream = payload["streams"][0]
-    template = stream["uriTemplates"]["progressive"]
 
-    print("Broadcast:")
-    print(payload["title"])
-    print()
+    template = stream["uriTemplates"]["progressive"]
 
     print("Template:")
     print(template)
@@ -39,18 +34,24 @@ def main():
 
     userid = str(uuid.uuid4())
 
-    audio_url = (
-        template
-        .replace("{offset}", "offset=0")
-        .replace("{offsetende}", f"offsetende={payload['duration']}")
-        .replace("{shoutcast}", "shoutcast=0")
-        .replace("{player}", "player=web")
-        .replace("{referer}", "referer=fm4.orf.at")
-        .replace("{userid}", f"userid={userid}")
-    )
+    audio_url = template
+
+    audio_url = audio_url.replace("{offset}", "offset=0")
+    audio_url = audio_url.replace("{offsetende}", f"offsetende={payload['duration']}")
+    audio_url = audio_url.replace("{shoutcast}", "shoutcast=0")
+    audio_url = audio_url.replace("{player}", "player=web")
+    audio_url = audio_url.replace("{referer}", "referer=fm4.orf.at")
+    audio_url = audio_url.replace("{userid}", f"userid={userid}")
 
     print("Constructed audio URL:")
     print(audio_url)
+    print()
+
+    if "{" in audio_url or "}" in audio_url:
+        print("ERROR: URL still contains placeholders!")
+        return
+
+    print("No placeholders remain.")
     print()
 
     audio_request = urllib.request.Request(
