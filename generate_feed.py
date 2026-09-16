@@ -124,16 +124,14 @@ def get_broadcast(broadcast_id):
 
     url = (
         "https://audioapi.orf.at/fm4/api/json/5.0/broadcast/"
-        f"{broadcast_id}?items=true&_o=sound.orf.at"
+        f"{broadcast_id}?_o=sound.orf.at"
     )
 
     raw = fetch(url)
     data = __import__("json").loads(raw)
 
-    # Current ORF API places the broadcast inside payload.
-    payload = data.get("payload", data)
-
-    return payload
+    # ORF returns the broadcast data in "payload".
+    return data.get("payload", data)
 
 
 def extract_audio_items(payload):
@@ -165,11 +163,11 @@ def extract_audio_items(payload):
         loop_id = stream.get("loopStreamId")
 
         if not audio_url and loop_id:
-            audio_url = (
-                "https://loopstreamfm4.apa.at/"
-                "?channel=fm4&id="
-                + urllib.parse.quote(str(loop_id), safe="")
-            )
+    audio_url = (
+        "https://loopstream01.apa.at/"
+        "?channel=fm4&id="
+        + urllib.parse.quote(str(loop_id), safe="")
+    )
 
         if not audio_url:
             continue
