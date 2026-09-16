@@ -1,21 +1,24 @@
 import html
 import re
-import urllib.request
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
+
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
 
 # ------------------------------------------------------------
-# FM4 shows we want
+# Configuration
 # ------------------------------------------------------------
 
 SHOWS = [
     {
         "name": "Tribe Vibes",
         "url": "https://fm4.orf.at/sendereihe/40/tribe-vibes",
-        "description": "The HipHop-Show on FM4 with Trishes and DJ Phekt.",
+        "description": "Tribe Vibes on FM4.",
     },
     {
         "name": "Swound Sound",
@@ -25,53 +28,488 @@ SHOWS = [
     {
         "name": "Worldwide Show",
         "url": "https://fm4.orf.at/sendereihe/19/worldwide-show",
-        "description": "Beats from around the world with Gilles Peterson.",
+        "description": "Worldwide Show on FM4.",
     },
 ]
 
-BASE_URL = "https://fm4.orf.at"
-FEED_TITLE = "FM4 — My Shows"
-FEED_DESCRIPTION = (
-    "Latest episodes of Tribe Vibes, Swound Sound and Worldwide Show."
-)
 OUTPUT_FILE = "feed.xml"
 
 
 # ------------------------------------------------------------
-# Helpers
+# Download a webpage
 # ------------------------------------------------------------
 
 def fetch(url):
-    req = urllib.request.Request(
+
+    request = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "Mozilla/5.0 FM4-Podcast-Feed/1.0"
+            "User-Agent":
+                "Mozilla/5.0 FM4-Podcast-Feed/1.0"
         },
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        return response.read().decode("utf-8", errors="replace")
+
+    with urllib.request.urlopen(
+        request,
+        timeout=30
+    ) as response:
+
+        return response.read().decode(
+            "utf-8",
+            errors="replace"
+        )
 
 
-def xml_escape(text):
-    return html.escape(str(text or ""), quote=False)
+# ------------------------------------------------------------
+# Find episode pages
+# ------------------------------------------------------------
+
+def find_episode_urls(series_url):
+
+    page = fetch(series_url)
+
+    pattern = re.compile(
+        r'href=["\'](/sendung/(\d+)/[^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    results = []
+
+    seen = set()
+
+    for path, episode_id in pattern.findall(page):
+
+        full_url = urllib.parse.urljoin(
+            "https://fm4.orf.at",
+            path
+        )
+
+        if full_url not in seen:
+
+            seen.add(full_url)
+
+            results.append(
+                (
+                    full_url,
+                    episode_id
+                )
+            )
+
+    return results
 
 
-def iso_to_datetime(value):
-    if not value:
-        return None
+# ------------------------------------------------------------
+# Extract the audio URL from an FM4 episode page
+#
+# We use Playwright because the current ORF Sound player
+# is JavaScript based.
+# ------------------------------------------------------------
 
-    try:
-        value = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return None
+def get_audio_from_page(page_url):
+
+    audio_urls = []
+
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(
+            headless=True
+        )
+
+        page = browser.new_page()
+
+        def request_handler(request):
+
+            url = request.url
+
+            if (
+                "loopstream" in url.lower()
+                or ".mp3" in url.lower()
+                or "audioapi.orf.at" in url.lower()
+            ):
+
+                if url not in audio_urls:
+
+                    print(
+                        "    Audio request:",
+                        url[:250]
+                    )
+
+                    audio_urls.append(url)
+
+        page.on(
+            "request",
+            request_handler
+        )
+
+        print(
+            f"    Opening {page_url}"
+        )
+
+        page.goto(
+            page_url,
+            wait_until="domcontentloaded",
+            timeout=60000
+        )
+
+        # Give the player time to initialise.
+        page.wait_for_timeout(5000)
+
+        # Try the visible "Anhören" / play control.
+        selectors = [
+            "text=Anhören",
+            "text=Wiedergabe starten",
+            "[aria-label*='Wiedergabe']",
+            "[aria-label*='Play']",
+            "button",
+        ]
+
+        for selector in selectors:
+
+            try:
+
+                locator = page.locator(
+                    selector
+                ).first
+
+                if locator.count() > 0:
+
+                    locator.click(
+                        timeout=3000
+                    )
+
+                    print(
+                        "    Clicked:",
+                        selector
+                    )
+
+                    page.wait_for_timeout(
+                        5000
+                    )
+
+                    break
+
+            except Exception:
+                pass
+
+        browser.close()
+
+    if not audio_urls:
+
+        raise RuntimeError(
+            "Could not find an ORF audio stream."
+        )
+
+    # Prefer an actual MP3/loopstream URL.
+    for url in audio_urls:
+
+        if (
+            "loopstream" in url.lower()
+            or ".mp3" in url.lower()
+        ):
+
+            return url
+
+    return audio_urls[0]
 
 
-def format_duration(seconds):
-    if not seconds:
+# ------------------------------------------------------------
+# Extract basic information from the FM4 page
+# ------------------------------------------------------------
+
+def extract_page_info(page_url):
+
+    page = fetch(page_url)
+
+    # Title
+    title_match = re.search(
+        r"<h1[^>]*>(.*?)</h1>",
+        page,
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    if title_match:
+
+        title = re.sub(
+            r"<[^>]+>",
+            "",
+            title_match.group(1)
+        ).strip()
+
+    else:
+
+        title = "FM4 Episode"
+
+    # Remove HTML entities.
+    title = html.unescape(title)
+
+    return {
+        "title": title,
+        "description": "",
+        "date": None,
+    }
+
+
+# ------------------------------------------------------------
+# Get latest episodes for one show
+# ------------------------------------------------------------
+
+def get_show_episodes(show):
+
+    print(
+        f"\nChecking {show['name']}..."
+    )
+
+    episode_urls = find_episode_urls(
+        show["url"]
+    )
+
+    if not episode_urls:
+
+        raise RuntimeError(
+            f"No episodes found for {show['name']}"
+        )
+
+    # We only need the two newest.
+    episode_urls = episode_urls[:2]
+
+    episodes = []
+
+    for page_url, episode_id in episode_urls:
+
+        print(
+            f"  Episode {episode_id}"
+        )
+
+        try:
+
+            info = extract_page_info(
+                page_url
+            )
+
+            audio_url = get_audio_from_page(
+                page_url
+            )
+
+            episodes.append(
+                {
+                    "show": show["name"],
+                    "title": (
+                        f"{show['name']} — "
+                        f"{info['title']}"
+                    ),
+                    "description":
+                        show["description"],
+                    "url": audio_url,
+                    "page": page_url,
+                    "guid":
+                        f"fm4-{episode_id}",
+                    "date":
+                        info["date"],
+                }
+            )
+
+        except Exception as e:
+
+            print(
+                f"    ERROR: {e}"
+            )
+
+    return episodes
+
+
+# ------------------------------------------------------------
+# Generate RSS feed
+# ------------------------------------------------------------
+
+def make_feed(episodes):
+
+    rss = ET.Element(
+        "rss",
+        {
+            "version": "2.0",
+            "xmlns:itunes":
+                "http://www.itunes.com/dtds/podcast-1.0.dtd",
+        },
+    )
+
+    channel = ET.SubElement(
+        rss,
+        "channel"
+    )
+
+    def add(tag, text):
+
+        element = ET.SubElement(
+            channel,
+            tag
+        )
+
+        element.text = str(
+            text or ""
+        )
+
+        return element
+
+    add(
+        "title",
+        "FM4 — My Shows"
+    )
+
+    add(
+        "link",
+        "https://fm4.orf.at/"
+    )
+
+    add(
+        "description",
+        "Latest episodes of Tribe Vibes, "
+        "Swound Sound and Worldwide Show."
+    )
+
+    add(
+        "language",
+        "en-at"
+    )
+
+    add(
+        "lastBuildDate",
+        format_datetime(
+            datetime.now(
+                timezone.utc
+            )
+        )
+    )
+
+    add(
+        "itunes:author",
+        "FM4"
+    )
+
+    add(
+        "itunes:summary",
+        "Latest FM4 shows."
+    )
+
+    add(
+        "itunes:explicit",
+        "no"
+    )
+
+    for episode in episodes:
+
+        item = ET.SubElement(
+            channel,
+            "item"
+        )
+
+        def item_add(tag, text):
+
+            element = ET.SubElement(
+                item,
+                tag
+            )
+
+            element.text = str(
+                text or ""
+            )
+
+            return element
+
+        item_add(
+            "title",
+            episode["title"]
+        )
+
+        item_add(
+            "description",
+            episode["description"]
+        )
+
+        item_add(
+            "guid",
+            episode["guid"]
+        )
+
+        item_add(
+            "link",
+            episode["page"]
+        )
+
+        ET.SubElement(
+            item,
+            "enclosure",
+            {
+                "url": episode["url"],
+                "type": "audio/mpeg",
+                "length": "0",
+            },
+        )
+
+        item_add(
+            "itunes:author",
+            "FM4"
+        )
+
+    ET.indent(
+        rss,
+        space="  "
+    )
+
+    tree = ET.ElementTree(
+        rss
+    )
+
+    tree.write(
+        OUTPUT_FILE,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+
+# ------------------------------------------------------------
+# Main
+# ------------------------------------------------------------
+
+def main():
+
+    episodes = []
+
+    for show in SHOWS:
+
+        try:
+
+            episodes.extend(
+                get_show_episodes(
+                    show
+                )
+            )
+
+        except Exception as e:
+
+            print(
+                f"ERROR processing "
+                f"{show['name']}: {e}"
+            )
+
+    if not episodes:
+
+        raise RuntimeError(
+            "No FM4 episodes were found."
+        )
+
+    make_feed(
+        episodes
+    )
+
+    print(
+        f"\nCreated {OUTPUT_FILE} "
+        f"with {len(episodes)} episodes."
+    )
+
+
+if __name__ == "__main__":
+
+    main()    if not seconds:
         return None
 
     seconds = int(float(seconds))
