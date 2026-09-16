@@ -1,68 +1,81 @@
 import json
 import urllib.request
+import uuid
+from urllib.parse import urlparse
+
 
 BROADCAST_ID = "1028051"
 
-URL = (
+API_URL = (
     "https://audioapi-v2.orf.at/fm4/api/json/5.0/broadcast/"
     f"{BROADCAST_ID}?items=true&_o=fm4.orf.at"
 )
 
 
-def find_urls(obj, path=""):
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            yield from find_urls(value, f"{path}.{key}")
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            yield from find_urls(value, f"{path}[{i}]")
-    elif isinstance(obj, str):
-        if "http://" in obj or "https://" in obj:
-            yield path, obj
-
-
 def main():
-    print("Testing FM4 API for audio information")
-    print(URL)
+    print("Testing FM4 direct audio URL")
     print()
 
     request = urllib.request.Request(
-        URL,
+        API_URL,
         headers={"User-Agent": "Mozilla/5.0 FM4-Podcast-Test/1.0"},
     )
 
     with urllib.request.urlopen(request, timeout=30) as response:
         data = json.loads(response.read().decode("utf-8"))
 
-    payload = data.get("payload", {})
+    payload = data["payload"]
 
-    print("TITLE:")
-    print(payload.get("title"))
+    stream = payload["streams"][0]
+    template = stream["uriTemplates"]["progressive"]
+
+    print("Broadcast:")
+    print(payload["title"])
     print()
 
-    print("BROADCAST DAY:")
-    print(payload.get("broadcastDay"))
+    print("Template:")
+    print(template)
     print()
 
-    print("DURATION:")
-    print(payload.get("duration"))
+    userid = str(uuid.uuid4())
+
+    audio_url = (
+        template
+        .replace("{offset}", "offset=0")
+        .replace("{offsetende}", f"offsetende={payload['duration']}")
+        .replace("{shoutcast}", "shoutcast=0")
+        .replace("{player}", "player=web")
+        .replace("{referer}", "referer=fm4.orf.at")
+        .replace("{userid}", f"userid={userid}")
+    )
+
+    print("Constructed audio URL:")
+    print(audio_url)
     print()
 
-    print("TOP-LEVEL PAYLOAD KEYS:")
-    print(", ".join(payload.keys()))
-    print()
+    audio_request = urllib.request.Request(
+        audio_url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://fm4.orf.at/",
+        },
+    )
 
-    print("ALL URLS FOUND IN RESPONSE:")
-    print("-" * 80)
-
-    urls = list(find_urls(data))
-
-    for path, url in urls:
-        print(path)
-        print(url)
+    with urllib.request.urlopen(audio_request, timeout=30) as response:
+        print("HTTP STATUS:")
+        print(response.status)
         print()
 
-    print(f"Total URLs found: {len(urls)}")
+        print("CONTENT TYPE:")
+        print(response.headers.get("Content-Type"))
+        print()
+
+        print("CONTENT LENGTH:")
+        print(response.headers.get("Content-Length"))
+        print()
+
+        print("FINAL URL:")
+        print(response.geturl())
 
 
 if __name__ == "__main__":
