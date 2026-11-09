@@ -2,22 +2,24 @@ name: Update FM4 Podcast Feed
 
 on:
   schedule:
-    - cron: "0 16 * * *"
+    # Run daily at 16:00 UTC
+    - cron: '0 16 * * *'
+
+    # Extra monthly run with a repository heartbeat
+    - cron: '17 16 1 * *'
 
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -34,6 +36,19 @@ jobs:
       - name: Generate FM4 podcast feed
         run: |
           python generate_feed.py
+
+      - name: Monthly repository heartbeat
+        if: github.event_name == 'schedule' && github.event.schedule == '17 16 1 * *'
+        run: |
+          mkdir -p .github
+          date -u +"Last automated heartbeat: %Y-%m-%d %H:%M:%S UTC" > .github/heartbeat.txt
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/heartbeat.txt
+          git commit -m "Monthly repository heartbeat"
+          git push
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
